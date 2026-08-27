@@ -1,0 +1,6 @@
+gymnasium[box2d]==1.0.0
+torch>=2.2.0
+numpy>=1.26.0
+opencv-python-headless>=4.9.0
+matplotlib>=3.8.0
+tqdm>=4.66.0
