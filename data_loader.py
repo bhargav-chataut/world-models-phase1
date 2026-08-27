@@ -21,10 +21,10 @@ every training run after that.
 import numpy as np
 import glob
 import os
+import sys
 import shutil
 import torch
 from torch.utils.data import Dataset
-from tqdm import tqdm
 
 
 def flatten_to_memmap(data_dir, out_path, dtype=np.float32,
@@ -57,11 +57,24 @@ def flatten_to_memmap(data_dir, out_path, dtype=np.float32,
 
     # Single pass: decompress each file once, hold episode frame arrays
     # in a list so we know the total count before allocating the memmap.
+    # Plain print+flush instead of tqdm -- tqdm.notebook needs ipywidgets
+    # enabled in the frontend and fails SILENTLY (no bar, no error) if
+    # it isn't, which is almost certainly what you're hitting.
+    print(f"Found {len(part_files)} part files. Starting decompression...")
+    sys.stdout.flush()
     all_frames = []
-    for pf in tqdm(part_files, desc="Loading + decompressing part files"):
+    for i, pf in enumerate(part_files):
+        size_mb = os.path.getsize(pf) / 1e6
+        print(f"  [{i+1}/{len(part_files)}] loading {os.path.basename(pf)} "
+              f"({size_mb:.1f} MB)...", end=" ")
+        sys.stdout.flush()
         with np.load(pf, allow_pickle=True) as d:
+            n_before = len(all_frames)
             for ep_frames in d["frames"]:
                 all_frames.append(np.asarray(ep_frames, dtype=dtype))
+        print(f"got {len(all_frames) - n_before} episodes "
+              f"(running total: {len(all_frames)})")
+        sys.stdout.flush()
 
     total_frames = sum(len(f) for f in all_frames)
     size_gb = total_frames * 64 * 64 * 3 * 4 / 1e9
@@ -73,10 +86,16 @@ def flatten_to_memmap(data_dir, out_path, dtype=np.float32,
         local_staging, mode="w+", dtype=dtype, shape=(total_frames, 64, 64, 3)
     )
     write_idx = 0
-    for ep in tqdm(all_frames, desc="Writing frames to local memmap"):
+    report_every = max(1, len(all_frames) // 20)  # ~20 progress lines total
+    for i, ep in enumerate(all_frames):
         n = len(ep)
         mmap[write_idx:write_idx + n] = ep
         write_idx += n
+        if i % report_every == 0 or i == len(all_frames) - 1:
+            pct = 100 * (i + 1) / len(all_frames)
+            print(f"  writing episode {i+1}/{len(all_frames)} "
+                  f"({pct:.0f}%) -- {write_idx}/{total_frames} frames written")
+            sys.stdout.flush()
     mmap.flush()
     del mmap  # release the memmap handle before copying the file
 
