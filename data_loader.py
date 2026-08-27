@@ -21,53 +21,68 @@ every training run after that.
 import numpy as np
 import glob
 import os
+import shutil
 import torch
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 
-def flatten_to_memmap(data_dir, out_path, dtype=np.float32):
+def flatten_to_memmap(data_dir, out_path, dtype=np.float32,
+                       local_staging="/content/frames_tmp.npy"):
     """
     Reads all rollouts_partN.npz files in data_dir, concatenates every
     frame from every episode into one big array, and writes it to
     out_path as a memory-mapped .npy file.
 
-    This costs disk space (num_frames * 64*64*3*4 bytes for float32 —
-    roughly 3-4GB for ~1000 CarRacing episodes at ~1000 steps each,
-    less if episodes terminate early) but makes training data loading
-    fast and simple: no per-file reopening, no object-array overhead.
+    Two things this version does differently from a naive implementation,
+    both for speed on Colab:
+
+    1. Single decompression pass. Each .npz is opened and decompressed
+       exactly once (episode arrays are kept in memory just long enough
+       to know total frame count and copy them into the memmap), instead
+       of opening every file twice -- once to count, once to copy.
+
+    2. Writes to LOCAL disk first (/content, fast local SSD), then does
+       one bulk copy to `out_path` on Drive at the end. Writing thousands
+       of small memmap slices directly to a Drive-mounted path (which is
+       a network filesystem under the hood) is much slower than writing
+       locally and copying once.
+
+    Disk cost: num_frames * 64*64*3*4 bytes for float32 -- roughly
+    3-4GB for ~1000 CarRacing episodes at ~1000 steps each, less if
+    episodes terminate early (which is common with a random policy).
     """
     part_files = sorted(glob.glob(os.path.join(data_dir, "rollouts_part*.npz")))
     assert len(part_files) > 0, f"No rollout files found in {data_dir}"
 
-    # First pass: count total frames so we can preallocate the memmap
-    # at the right size (memmap needs a fixed shape up front).
-    total_frames = 0
-    for pf in part_files:
+    # Single pass: decompress each file once, hold episode frame arrays
+    # in a list so we know the total count before allocating the memmap.
+    all_frames = []
+    for pf in tqdm(part_files, desc="Loading + decompressing part files"):
         with np.load(pf, allow_pickle=True) as d:
             for ep_frames in d["frames"]:
-                total_frames += len(ep_frames)
+                all_frames.append(np.asarray(ep_frames, dtype=dtype))
 
-    print(f"Found {total_frames} total frames across {len(part_files)} files")
-    print(f"Allocating memmap at {out_path} "
-          f"({total_frames * 64 * 64 * 3 * 4 / 1e9:.2f} GB)")
+    total_frames = sum(len(f) for f in all_frames)
+    size_gb = total_frames * 64 * 64 * 3 * 4 / 1e9
+    print(f"Total frames: {total_frames} ({size_gb:.2f} GB) -- "
+          f"writing to local staging file: {local_staging}")
 
+    # Write to LOCAL /content disk first -- much faster than Drive.
     mmap = np.lib.format.open_memmap(
-        out_path, mode="w+", dtype=dtype, shape=(total_frames, 64, 64, 3)
+        local_staging, mode="w+", dtype=dtype, shape=(total_frames, 64, 64, 3)
     )
-
-    # Second pass: write every frame into the memmap in order
     write_idx = 0
-    for pf in part_files:
-        with np.load(pf, allow_pickle=True) as d:
-            frames = d["frames"]
-            for ep_frames in frames:
-                n = len(ep_frames)
-                mmap[write_idx:write_idx + n] = np.stack(ep_frames).astype(dtype)
-                write_idx += n
-        print(f"  processed {pf} -> {write_idx}/{total_frames} frames written")
-
+    for ep in tqdm(all_frames, desc="Writing frames to local memmap"):
+        n = len(ep)
+        mmap[write_idx:write_idx + n] = ep
+        write_idx += n
     mmap.flush()
-    print(f"Done. Wrote {write_idx} frames to {out_path}")
+    del mmap  # release the memmap handle before copying the file
+
+    print(f"Local write done. Copying {local_staging} -> {out_path} (Drive)...")
+    shutil.copy(local_staging, out_path)
+    print(f"Done. {write_idx} frames available at {out_path}")
     return out_path
 
 
