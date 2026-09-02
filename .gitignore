@@ -1,3 +1,8 @@
 .env
 .venv
 README.md
+data/
+frames_parts/
+*.npy
+*.npz
+checkpoints/
