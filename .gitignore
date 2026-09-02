@@ -2,7 +2,7 @@
 .venv
 README.md
 data/
-frames_parts/
+frames_parts
 *.npy
 *.npz
-checkpoints/
+checkpoints
