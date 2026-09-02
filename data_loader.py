@@ -171,9 +171,17 @@ class FrameDataset(Dataset):
 
 
 if __name__ == "__main__":
-    # Example usage in a Colab cell:
-    # from data_loader import flatten_to_parts, FrameDataset
-    # flatten_to_parts("/content/drive/MyDrive/world-models-phase1/data",
-    #                   "/content/drive/MyDrive/world-models-phase1/frames_parts")
-    # ds = FrameDataset("/content/drive/MyDrive/world-models-phase1/frames_parts")
-    pass
+    DATA_DIR = "./data"             
+    OUT_DIR = "./frames_parts"       
+    START_IDX = 0                   
+    END_IDX = None                 
+ 
+    flatten_to_parts(
+        data_dir=DATA_DIR,
+        out_dir=OUT_DIR,
+        start_idx=START_IDX,
+        end_idx=END_IDX,
+    )
+    ds = FrameDataset(OUT_DIR)
+    print(f"Sanity check: {len(ds)} frames total, "
+          f"first frame shape = {tuple(ds[0].shape)}")
